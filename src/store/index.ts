@@ -14,6 +14,7 @@ import type {
   DollMaterial,
   MechanismAction,
 } from '@/types';
+import type { MechanismEffect } from '@/utils/physics';
 import { generateId, loadProjects, saveProject, deleteProject, loadCurrentProjectId, saveCurrentProjectId } from '@/utils/storage';
 
 interface TheaterState {
@@ -24,12 +25,15 @@ interface TheaterState {
   currentTime: number;
   selectedElementId: string | null;
   particles: Particle[];
+  mechanismEffects: MechanismEffect[];
   showForceField: boolean;
   showReviewModal: boolean;
   showProjectManager: boolean;
   showFailureReplay: boolean;
   currentReplay: FailureReplay | null;
   recordedFrames: Array<{ time: number; elements: StageElement[] }>;
+  replayFrameIndex: number;
+  isReplaying: boolean;
 
   setEditorMode: (mode: EditorMode) => void;
   setPlaybackState: (state: PlaybackState) => void;
@@ -48,6 +52,7 @@ interface TheaterState {
   setElementMaterial: (id: string, material: DollMaterial) => void;
   setElementTriggerAction: (id: string, action: MechanismAction) => void;
   updateParticles: (particles: Particle[]) => void;
+  updateMechanismEffects: (effects: MechanismEffect[]) => void;
   simulateTick: (dt: number, bounds: { width: number; height: number }, simulateFn: (elements: StageElement[], dt: number, bounds: { width: number; height: number }) => StageElement[]) => void;
 
   addSequence: (name: string) => void;
@@ -56,6 +61,11 @@ interface TheaterState {
   removeKeyframe: (keyframeId: string) => void;
   addRecordedFrame: (time: number, elements: StageElement[]) => void;
   clearRecordedFrames: () => void;
+  finalizeRecording: () => void;
+
+  startReplay: () => void;
+  stopReplay: () => void;
+  replayNextFrame: () => void;
 
   saveCurrentProject: () => void;
   loadProject: (id: string) => void;
@@ -132,15 +142,24 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   currentTime: 0,
   selectedElementId: null,
   particles: [],
+  mechanismEffects: [],
   showForceField: true,
   showReviewModal: false,
   showProjectManager: false,
   showFailureReplay: false,
   currentReplay: null,
   recordedFrames: [],
+  replayFrameIndex: 0,
+  isReplaying: false,
 
   setEditorMode: (mode) => set({ editorMode: mode }),
-  setPlaybackState: (state) => set({ playbackState: state }),
+  setPlaybackState: (state) => {
+    const { playbackState: oldState, finalizeRecording } = get();
+    if (oldState === 'recording' && state !== 'recording') {
+      finalizeRecording();
+    }
+    set({ playbackState: state });
+  },
   setCurrentTime: (time) => set({ currentTime: time }),
   setSelectedElement: (id) => set({ selectedElementId: id }),
   toggleForceField: () => set((s) => ({ showForceField: !s.showForceField })),
@@ -210,6 +229,8 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   },
 
   updateParticles: (particles) => set({ particles }),
+
+  updateMechanismEffects: (effects) => set({ mechanismEffects: effects }),
 
   simulateTick: (dt, bounds, simulateFn) => {
     set((s) => {
@@ -287,6 +308,95 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
   },
 
   clearRecordedFrames: () => set({ recordedFrames: [], currentTime: 0 }),
+
+  finalizeRecording: () => {
+    const { recordedFrames, project, addSequence } = get();
+    if (recordedFrames.length < 2) return;
+
+    const sequenceName = prompt('请输入剧目名称：', `剧目 ${project.sequences.length + 1}`);
+    if (!sequenceName?.trim()) return;
+
+    const newSeq: ActionSequence = {
+      id: generateId(),
+      name: sequenceName.trim(),
+      duration: recordedFrames[recordedFrames.length - 1].time,
+      keyframes: [],
+    };
+
+    const elementIds = new Set<string>();
+    recordedFrames.forEach(frame => {
+      frame.elements.forEach(elem => elementIds.add(elem.id));
+    });
+
+    const sampleRate = Math.max(1, Math.floor(recordedFrames.length / 30));
+    elementIds.forEach(elemId => {
+      recordedFrames.forEach((frame, idx) => {
+        if (idx % sampleRate === 0 || idx === recordedFrames.length - 1) {
+          const elem = frame.elements.find(e => e.id === elemId);
+          if (elem) {
+            newSeq.keyframes.push({
+              id: generateId(),
+              time: frame.time,
+              elementId: elemId,
+              x: elem.x,
+              y: elem.y,
+              chargePolarity: elem.charge.polarity,
+              chargeMagnitude: elem.charge.magnitude,
+            });
+          }
+        }
+      });
+    });
+
+    newSeq.keyframes.sort((a, b) => a.time - b.time);
+
+    set((s) => ({
+      project: {
+        ...s.project,
+        sequences: [...s.project.sequences, newSeq],
+        updatedAt: Date.now(),
+      },
+    }));
+
+    get().saveCurrentProject();
+    alert(`剧目 "${newSeq.name}" 已保存！`);
+  },
+
+  startReplay: () => {
+    const { currentReplay } = get();
+    if (!currentReplay || currentReplay.recordedFrames.length === 0) return;
+    set({
+      isReplaying: true,
+      replayFrameIndex: 0,
+      currentTime: 0,
+      project: {
+        ...get().project,
+        elements: JSON.parse(JSON.stringify(currentReplay.snapshot)),
+      },
+    });
+  },
+
+  stopReplay: () => {
+    set({ isReplaying: false, replayFrameIndex: 0 });
+  },
+
+  replayNextFrame: () => {
+    const { currentReplay, replayFrameIndex, project } = get();
+    if (!currentReplay || !currentReplay.recordedFrames[replayFrameIndex]) {
+      get().stopReplay();
+      return;
+    }
+
+    const frame = currentReplay.recordedFrames[replayFrameIndex];
+    set({
+      project: {
+        ...project,
+        elements: JSON.parse(JSON.stringify(frame.elements)),
+      },
+      currentTime: frame.time,
+      replayFrameIndex: replayFrameIndex + 1,
+    });
+  },
 
   saveCurrentProject: () => {
     const { project } = get();
@@ -378,10 +488,17 @@ export const useTheaterStore = create<TheaterState>((set, get) => ({
 }));
 
 const savedId = loadCurrentProjectId();
+const allProjects = loadProjects();
 if (savedId) {
-  const projects = loadProjects();
-  const found = projects.find((p) => p.id === savedId);
+  const found = allProjects.find((p) => p.id === savedId);
   if (found) {
-    useTheaterStore.setState({ project: JSON.parse(JSON.stringify(found)) });
+    useTheaterStore.setState({
+      project: JSON.parse(JSON.stringify(found)),
+      allProjects,
+    });
+  } else {
+    useTheaterStore.setState({ allProjects });
   }
+} else {
+  useTheaterStore.setState({ allProjects });
 }

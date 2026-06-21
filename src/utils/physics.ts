@@ -188,3 +188,152 @@ export function checkMechanismTriggers(elements: StageElement[]): string[] {
 
   return triggered;
 }
+
+export interface MechanismEffect {
+  type: 'rotate' | 'lift' | 'drop' | 'spark';
+  mechId: string;
+  startTime: number;
+  duration: number;
+  progress: number;
+}
+
+export function executeMechanismActions(
+  elements: StageElement[],
+  triggeredIds: string[],
+  activeEffects: MechanismEffect[],
+  dt: number,
+  currentTime: number
+): { elements: StageElement[]; effects: MechanismEffect[]; particles: Particle[] } {
+  let newElements = [...elements];
+  let newEffects = [...activeEffects];
+  let newParticles: Particle[] = [];
+
+  for (const mechId of triggeredIds) {
+    const mech = newElements.find(e => e.id === mechId);
+    if (!mech || !mech.triggerAction || mech.triggerAction === 'none') continue;
+
+    const existing = newEffects.find(e => e.mechId === mechId && e.type === mech.triggerAction);
+    if (!existing) {
+      newEffects.push({
+        type: mech.triggerAction,
+        mechId,
+        startTime: currentTime,
+        duration: mech.triggerAction === 'spark' ? 1000 : 3000,
+        progress: 0,
+      });
+    }
+  }
+
+  const updatedEffects: MechanismEffect[] = [];
+  for (const effect of newEffects) {
+    const elapsed = currentTime - effect.startTime;
+    const progress = Math.min(1, elapsed / effect.duration);
+    effect.progress = progress;
+
+    if (progress < 1) {
+      updatedEffects.push(effect);
+
+      const mechIndex = newElements.findIndex(e => e.id === effect.mechId);
+      if (mechIndex >= 0) {
+        const mech = newElements[mechIndex];
+        const centerX = mech.x;
+        const centerY = mech.y;
+        const radius = (mech.triggerDistance || 60) * 0.8;
+
+        switch (effect.type) {
+          case 'rotate': {
+            const angle = progress * Math.PI * 2;
+            newElements = newElements.map((elem, idx) => {
+              if (idx === mechIndex) {
+                return { ...elem, rotation: progress * 360 };
+              }
+              if (elem.type === 'doll' || elem.type === 'metal') {
+                const dx = elem.x - centerX;
+                const dy = elem.y - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < radius && !elem.fixed) {
+                  const currentAngle = Math.atan2(dy, dx);
+                  const newAngle = currentAngle + dt * 3;
+                  return {
+                    ...elem,
+                    x: centerX + Math.cos(newAngle) * dist,
+                    y: centerY + Math.sin(newAngle) * dist,
+                    vx: -Math.sin(newAngle) * dist * 0.05,
+                    vy: Math.cos(newAngle) * dist * 0.05,
+                  };
+                }
+              }
+              return elem;
+            });
+            break;
+          }
+          case 'lift': {
+            const liftHeight = 100 * Math.sin(progress * Math.PI);
+            newElements = newElements.map((elem, idx) => {
+              if (idx === mechIndex) return elem;
+              if (elem.type === 'doll' || elem.type === 'metal') {
+                const dx = elem.x - centerX;
+                const dy = elem.y - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < radius && !elem.fixed) {
+                  return {
+                    ...elem,
+                    y: elem.y - liftHeight * (1 - dist / radius) * dt * 10,
+                    vy: elem.vy - liftHeight * (1 - dist / radius) * 0.5,
+                  };
+                }
+              }
+              return elem;
+            });
+            break;
+          }
+          case 'drop': {
+            if (progress > 0.2 && progress < 0.25) {
+              newElements = newElements.map((elem, idx) => {
+                if (idx === mechIndex) return elem;
+                if (elem.type === 'doll' || elem.type === 'metal') {
+                  const dx = elem.x - centerX;
+                  const dy = elem.y - centerY;
+                  const dist = Math.sqrt(dx * dx + dy * dy);
+                  if (dist < radius && !elem.fixed) {
+                    return {
+                      ...elem,
+                      vy: elem.vy + 15,
+                      y: elem.y + 2,
+                    };
+                  }
+                }
+                return elem;
+              });
+            }
+            break;
+          }
+          case 'spark': {
+            for (let i = 0; i < 5; i++) {
+              const angle = Math.random() * Math.PI * 2;
+              const speed = 2 + Math.random() * 4;
+              newParticles.push({
+                id: generateId(),
+                x: centerX + (Math.random() - 0.5) * 30,
+                y: centerY + (Math.random() - 0.5) * 30,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 2,
+                life: 1,
+                maxLife: 20 + Math.random() * 15,
+                color: Math.random() > 0.5 ? '#FFD700' : '#FF6B35',
+                size: 2 + Math.random() * 2,
+              });
+            }
+            newElements = newElements.map((elem, idx) => {
+              if (idx === mechIndex) return { ...elem, charge: { ...elem.charge, magnitude: 100 } };
+              return elem;
+            });
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return { elements: newElements, effects: updatedEffects, particles: newParticles };
+}

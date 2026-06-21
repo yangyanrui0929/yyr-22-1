@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { useTheaterStore } from '@/store';
 import type { StageElement, Particle, ElementType } from '@/types';
 import { CHARGE_COLORS, DOLL_MATERIAL_PROPERTIES } from '@/types';
-import { simulateStep, createElectricParticles, calculateForces, getChargeValue } from '@/utils/physics';
+import { simulateStep, createElectricParticles, calculateForces, getChargeValue, checkMechanismTriggers, executeMechanismActions } from '@/utils/physics';
 
 interface DragState {
   isDragging: boolean;
@@ -27,14 +27,18 @@ export default function StageCanvas() {
     playbackState,
     selectedElementId,
     particles,
+    mechanismEffects,
     showForceField,
     currentTime,
+    isReplaying,
     setSelectedElement,
     moveElement,
     addElement,
     updateParticles,
+    updateMechanismEffects,
     simulateTick,
     addRecordedFrame,
+    replayNextFrame,
   } = useTheaterStore();
 
   const elements = project.elements;
@@ -317,26 +321,57 @@ export default function StageCanvas() {
       const dt = Math.min((time - lastTimeRef.current) / 1000, 0.05);
       lastTimeRef.current = time;
 
-      if (playbackState === 'playing' || playbackState === 'recording') {
+      if (isReplaying) {
+        replayNextFrame();
+      } else if (playbackState === 'playing' || playbackState === 'recording') {
         simulateTick(dt, canvasSize, simulateStep);
-        const newParticles = createElectricParticles(elements, particles);
+
+        const triggered = checkMechanismTriggers(project.elements);
+        if (triggered.length > 0 || mechanismEffects.length > 0) {
+          const result = executeMechanismActions(
+            project.elements,
+            triggered,
+            mechanismEffects,
+            dt,
+            currentTime
+          );
+          if (result.elements !== project.elements) {
+            useTheaterStore.setState({
+              project: { ...project, elements: result.elements, updatedAt: Date.now() },
+            });
+          }
+          updateMechanismEffects(result.effects);
+          if (result.particles.length > 0) {
+            updateParticles([...particles, ...result.particles].slice(-200));
+          }
+        }
+
+        const newParticles = createElectricParticles(project.elements, particles);
         updateParticles(newParticles);
 
         if (playbackState === 'recording') {
-          addRecordedFrame(currentTime, elements);
+          addRecordedFrame(currentTime, project.elements);
         }
       }
 
       ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
 
       if (showForceField && editorMode === 'edit') {
-        drawForceField(ctx, elements);
+        drawForceField(ctx, project.elements);
       }
 
       drawParticles(ctx, particles);
 
-      for (const elem of elements) {
+      for (const elem of project.elements) {
         drawElement(ctx, elem, elem.id === selectedElementId);
+      }
+
+      if (isReplaying) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(10, 10, 140, 30);
+        ctx.fillStyle = '#FF4D4D';
+        ctx.font = 'bold 14px sans-serif';
+        ctx.fillText('⏯ 失败回放中...', 20, 30);
       }
 
       animationRef.current = requestAnimationFrame(render);
@@ -349,7 +384,7 @@ export default function StageCanvas() {
         cancelAnimationFrame(animationRef.current);
       }
     };
-  }, [elements, canvasSize, selectedElementId, playbackState, particles, showForceField, editorMode, currentTime, drawElement, simulateTick, updateParticles, addRecordedFrame]);
+  }, [project.elements, canvasSize, selectedElementId, playbackState, particles, mechanismEffects, showForceField, editorMode, currentTime, isReplaying, drawElement, simulateTick, updateParticles, updateMechanismEffects, addRecordedFrame, replayNextFrame]);
 
   const getCanvasCoords = (e: React.MouseEvent | React.DragEvent) => {
     const canvas = canvasRef.current;

@@ -5,6 +5,7 @@ import PropertyPanel from '@/components/PropertyPanel';
 import ControlBar from '@/components/ControlBar';
 import ReviewModal from '@/components/ReviewModal';
 import ProjectManager from '@/components/ProjectManager';
+import FailureReplayModal from '@/components/FailureReplayModal';
 
 export default function Home() {
   return (
@@ -18,6 +19,7 @@ export default function Home() {
       <ControlBar />
       <ReviewModal />
       <ProjectManager />
+      <FailureReplayModal />
     </div>
   );
 }
